@@ -1,116 +1,187 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- * @flow strict-local
- */
+import React, { useState, useEffect } from 'react';
+import { SafeAreaView, View, Text, Button, StyleSheet, ActivityIndicator, Switch } from 'react-native';
+import axios from 'axios';
+import NetInfo from '@react-native-community/netinfo';
+import Realm from 'realm';
 
-import React from 'react';
-import type {Node} from 'react';
-import {
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  useColorScheme,
-  View,
-} from 'react-native';
-
-import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
-
-/* $FlowFixMe[missing-local-annot] The type annotation(s) required by Flow's
- * LTI update could not be added via codemod */
-const Section = ({children, title}): Node => {
-  const isDarkMode = useColorScheme() === 'dark';
-  return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
-          },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
-          },
-        ]}>
-        {children}
-      </Text>
-    </View>
-  );
+const JokeSchema = {
+  name: 'Joke',
+  primaryKey: '_id',
+  properties: {
+    _id: 'int',
+    setup: 'string',
+    punchline: 'string',
+  },
 };
 
-const App: () => Node = () => {
-  const isDarkMode = useColorScheme() === 'dark';
+let realm;
 
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
+const App = () => {
+  const [joke, setJoke] = useState(null);
+  const [error, setError] = useState(null);
+  const [storedJokes, setStoredJokes] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [viewedJokes, setViewedJokes] = useState([]);
+  const [online, setOnline] = useState(true);
+
+  const fetchJoke = async () => {
+    setLoading(true);
+    try {
+      const netInfo = await NetInfo.fetch();
+
+      if (online || netInfo.isConnected) {
+        const response = await axios.get('https://official-joke-api.appspot.com/random_joke');
+        setJoke(response.data);
+        setViewedJokes(prevJokes => [...prevJokes, response.data].slice(-3));
+        setError(null);
+      } else {
+        if (storedJokes.length > 0) {
+          const nextJoke = storedJokes[currentIndex % storedJokes.length];
+          setJoke(nextJoke);
+          setCurrentIndex(currentIndex + 1);
+        } else {
+          setError('No stored jokes available. Please check your internet connection.');
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching joke:', error);
+      setError('Failed to fetch joke. Please check your internet connection.');
+    } finally {
+      setLoading(false);
+    }
   };
 
+  const toggleOnlineMode = () => {
+    setOnline(!online);
+  };
+
+  const saveJokes = () => {
+    try {
+      realm.write(() => {
+        realm.delete(realm.objects('Joke'));
+        viewedJokes.forEach(joke => {
+          realm.create('Joke', {
+            _id: joke.id,
+            setup: joke.setup,
+            punchline: joke.punchline,
+          }, Realm.UpdateMode.All);
+        });
+      });
+      fetchStoredJokes();
+    } catch (error) {
+      console.error('Error saving jokes:', error);
+    }
+  };
+
+  const fetchStoredJokes = () => {
+    const jokes = realm.objects('Joke').sorted('_id');
+    setStoredJokes(Array.from(jokes));
+  };
+
+  useEffect(() => {
+    realm = new Realm({ schema: [JokeSchema], schemaVersion: 1 });
+
+    fetchStoredJokes();
+    if (storedJokes.length < 3) {
+      Promise.all(new Array(3).fill(null).map(() => axios.get('https://official-joke-api.appspot.com/random_joke')))
+        .then(responses => {
+          responses.forEach(response => {
+            realm.write(() => {
+              realm.create('Joke', {
+                _id: response.data.id,
+                setup: response.data.setup,
+                punchline: response.data.punchline,
+              }, Realm.UpdateMode.All);
+            });
+          });
+          fetchStoredJokes();
+        })
+        .catch(error => console.error('Initial joke fetch failed:', error));
+    }
+
+    const unsubscribe = NetInfo.addEventListener(state => {
+      if (!state.isConnected) {
+        fetchStoredJokes();
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      realm.close();
+    };
+  }, []);
+
   return (
-    <SafeAreaView style={backgroundStyle}>
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
-      />
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        style={backgroundStyle}>
-        <Header />
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.js</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <LearnMoreLinks />
-        </View>
-      </ScrollView>
+    <SafeAreaView style={styles.container}>
+      <View style={styles.jokeContainer}>
+        {error ? (
+          <Text style={styles.errorMessage}>{error}</Text>
+        ) : (
+          <View>
+            {loading && <ActivityIndicator size="large" color="#0000ff" />}
+            {joke ? (
+              <View>
+                <Text style={styles.jokeSetup}>{joke.setup}</Text>
+                <Text style={styles.jokePunchline}>{joke.punchline}</Text>
+              </View>
+            ) : (
+              <Text style={styles.noJokeMessage}>Press the button to get a joke!</Text>
+            )}
+          </View>
+        )}
+      </View>
+      <View style={styles.buttonContainer}>
+        <Button title="Get Another Joke" onPress={fetchJoke} disabled={loading} />
+        <Button title="Save Jokes" onPress={saveJokes} />
+        <Switch value={online} onValueChange={toggleOnlineMode} />
+        <Text style={styles.onlineStatus}>{online ? 'Online' : 'Offline'}</Text>
+      </View>
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
+  jokeContainer: {
+    width: '80%',
+    alignItems: 'center',
   },
-  sectionDescription: {
-    marginTop: 8,
+  errorMessage: {
+    fontSize: 16,
+    color: 'red',
+    textAlign: 'center',
+  },
+  jokeSetup: {
     fontSize: 18,
-    fontWeight: '400',
+    fontWeight: 'bold',
+    marginBottom: 10,
+    textAlign: 'center',
   },
-  highlight: {
-    fontWeight: '700',
+  jokePunchline: {
+    fontSize: 16,
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  noJokeMessage: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '80%',
+    marginTop: 20,
+  },
+  onlineStatus: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginLeft: 10,
   },
 });
 
